@@ -1,7 +1,7 @@
 import React from 'react'
 import Navbar        from '../components/Navbar'
 import Hero          from '../components/Hero'
-import ClothesLine   from '../components/Clothesline'
+import ClothesLine   from '../components/ClothesLine'
 import AboutSection  from '../components/AboutSection'
 import UploadSection from '../components/UploadSection'
 import Footer        from '../components/Footer'
@@ -12,7 +12,7 @@ export default function Home() {
       <Navbar />
       <main>
         <Hero />
-        <Clothesline />
+        <ClothesLine />
         <AboutSection />
         <UploadSection />
       </main>
