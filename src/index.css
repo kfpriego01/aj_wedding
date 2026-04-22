@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #f8f4ef;
+    color: #3d4532;
+    font-family: 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #f8f4ef; }
+  ::-webkit-scrollbar-thumb { background: #5d6b4a; border-radius: 3px; }
+}
+
+@layer utilities {
+  /* Polaroid tilt helpers */
+  .tilt-left  { transform: rotate(-3deg); }
+  .tilt-right { transform: rotate(3deg); }
+  .tilt-none  { transform: rotate(-0.5deg); }
+
+  /* Clothesline rope */
+  .rope {
+    height: 3px;
+    background: linear-gradient(90deg, #9c7a4b, #c4a06b, #9c7a4b);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  }
+
+  /* Grain overlay */
+  .grain::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.4;
+  }
+}
