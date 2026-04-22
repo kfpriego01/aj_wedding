@@ -282,15 +282,13 @@ export default function UploadSection() {
                 )}
               </div>
 
-              <input
-                ref={inputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-                capture="environment"
-                className="hidden"
-                onChange={onInputChange}
-              />
-
+            <input
+  ref={inputRef}
+  type="file"
+  accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+  className="hidden"
+  onChange={onInputChange}
+/>
               <input
                 type="text"
                 placeholder="Your name (optional)"
