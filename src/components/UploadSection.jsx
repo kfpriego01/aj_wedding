@@ -7,7 +7,7 @@ const CLOUD_NAME     = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
 const UPLOAD_PRESET  = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
 
 // ── Rate limit config ────────────────────────────────────────────
-const RATE_LIMIT_MAX      = 5      // max uploads allowed
+const RATE_LIMIT_MAX      = 10    // max uploads allowed
 const RATE_LIMIT_WINDOW   = 60 * 60 * 1000  // 1 hour in ms
 const RATE_LIMIT_KEY      = 'aj_upload_log'
 
