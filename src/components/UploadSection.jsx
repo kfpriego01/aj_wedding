@@ -7,26 +7,23 @@ const CLOUD_NAME     = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
 const UPLOAD_PRESET  = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
 
 // ── Rate limit config ────────────────────────────────────────────
-const RATE_LIMIT_MAX      = 10    // max uploads allowed
-const RATE_LIMIT_WINDOW   = 60 * 60 * 1000  // 1 hour in ms
-const RATE_LIMIT_KEY      = 'aj_upload_log'
+const RATE_LIMIT_MAX    = 10
+const RATE_LIMIT_WINDOW = 60 * 60 * 1000
+const RATE_LIMIT_KEY    = 'aj_upload_log'
 
 function getRateLimitStatus() {
   try {
-    const raw  = localStorage.getItem(RATE_LIMIT_KEY)
-    const log  = raw ? JSON.parse(raw) : []
-    const now  = Date.now()
-
-    // Keep only timestamps within the current window
+    const raw    = localStorage.getItem(RATE_LIMIT_KEY)
+    const log    = raw ? JSON.parse(raw) : []
+    const now    = Date.now()
     const recent = log.filter((ts) => now - ts < RATE_LIMIT_WINDOW)
-
     return {
-      allowed:    recent.length < RATE_LIMIT_MAX,
-      used:       recent.length,
-      remaining:  Math.max(0, RATE_LIMIT_MAX - recent.length),
-      resetIn:    recent.length > 0
-                    ? Math.ceil((RATE_LIMIT_WINDOW - (now - Math.min(...recent))) / 60000)
-                    : 0,
+      allowed:   recent.length < RATE_LIMIT_MAX,
+      used:      recent.length,
+      remaining: Math.max(0, RATE_LIMIT_MAX - recent.length),
+      resetIn:   recent.length > 0
+                   ? Math.ceil((RATE_LIMIT_WINDOW - (now - Math.min(...recent))) / 60000)
+                   : 0,
       recent,
     }
   } catch {
@@ -34,14 +31,13 @@ function getRateLimitStatus() {
   }
 }
 
-function recordUpload() {
+function recordUploads(count) {
   try {
     const { recent } = getRateLimitStatus()
-    const updated = [...recent, Date.now()]
-    localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(updated))
-  } catch {
-    // localStorage unavailable — fail silently
-  }
+    const now        = Date.now()
+    const timestamps = Array.from({ length: count }, () => now)
+    localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify([...recent, ...timestamps]))
+  } catch {}
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -69,108 +65,127 @@ async function uploadToCloudinary(file) {
     `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
     { method: 'POST', body: formData }
   )
-
   if (!res.ok) {
     const err = await res.json()
     throw new Error(err.error?.message || 'Cloudinary upload failed')
   }
-
   const data = await res.json()
   return data.secure_url
 }
 
 // ── Component ────────────────────────────────────────────────────
 export default function UploadSection() {
-  const [preview,   setPreview]   = useState(null)
-  const [file,      setFile]      = useState(null)
+  // files = array of { file, preview, status: 'pending'|'uploading'|'done'|'error' }
+  const [files,     setFiles]     = useState([])
   const [guestName, setGuestName] = useState('')
   const [uploading, setUploading] = useState(false)
-  const [status,    setStatus]    = useState(null)   // 'success' | 'error' | 'rate_limited'
-  const [errorMsg,  setErrorMsg]  = useState('')
+  const [status,    setStatus]    = useState(null)  // 'success' | 'rate_limited'
   const [dragOver,  setDragOver]  = useState(false)
+  const [progress,  setProgress]  = useState({ done: 0, total: 0 })
   const inputRef = useRef()
 
-  // Check rate limit on mount to show counter
   const rateLimitStatus = getRateLimitStatus()
+  const { remaining, resetIn, used } = rateLimitStatus
 
-  const handleFile = async (raw) => {
-    if (!raw) return
+  // ── Add files from picker/drop ───────────────────────────────
+  const addFiles = async (rawFiles) => {
     setStatus(null)
+    const { remaining: rem } = getRateLimitStatus()
 
-    // Block file selection if already rate limited
-    if (!getRateLimitStatus().allowed) {
+    const incoming = Array.from(rawFiles).slice(0, rem) // respect limit
+
+    if (incoming.length === 0) {
       setStatus('rate_limited')
       return
     }
 
-    if (raw.size > MAX_SIZE_MB * 1024 * 1024) {
-      setErrorMsg(`File is too large. Max ${MAX_SIZE_MB} MB.`)
-      setStatus('error')
-      return
-    }
+    // Filter oversized
+    const valid = incoming.filter((f) => {
+      if (f.size > MAX_SIZE_MB * 1024 * 1024) return false
+      return true
+    })
 
-    const converted = await convertHeicIfNeeded(raw)
-    setFile(converted)
-    const reader = new FileReader()
-    reader.onload = (e) => setPreview(e.target.result)
-    reader.readAsDataURL(converted)
+    // Convert HEIC and generate previews
+    const prepared = await Promise.all(
+      valid.map(async (raw) => {
+        const converted = await convertHeicIfNeeded(raw)
+        const preview   = await new Promise((res) => {
+          const reader  = new FileReader()
+          reader.onload = (e) => res(e.target.result)
+          reader.readAsDataURL(converted)
+        })
+        return { file: converted, preview, status: 'pending', id: crypto.randomUUID() }
+      })
+    )
+
+    setFiles((prev) => [...prev, ...prepared])
   }
 
-  const onInputChange = (e) => handleFile(e.target.files?.[0])
+  const onInputChange = (e) => addFiles(e.target.files)
   const onDrop = (e) => {
     e.preventDefault()
     setDragOver(false)
-    handleFile(e.dataTransfer.files?.[0])
+    addFiles(e.dataTransfer.files)
   }
 
+  const removeFile = (id) => setFiles((prev) => prev.filter((f) => f.id !== id))
+
+  // ── Upload all pending ───────────────────────────────────────
   const handleUpload = async () => {
-    if (!file) return
+    const pending = files.filter((f) => f.status === 'pending')
+    if (pending.length === 0) return
 
-    // Final rate limit check right before uploading
-    const { allowed, resetIn } = getRateLimitStatus()
-    if (!allowed) {
-      setErrorMsg(`Upload limit reached. Try again in ${resetIn} minute${resetIn !== 1 ? 's' : ''}.`)
-      setStatus('rate_limited')
-      setFile(null)
-      setPreview(null)
-      return
-    }
+    const { allowed, remaining: rem, resetIn: ri } = getRateLimitStatus()
+    if (!allowed) { setStatus('rate_limited'); return }
 
+    // Cap to remaining quota
+    const toUpload = pending.slice(0, rem)
     setUploading(true)
-    setStatus(null)
+    setProgress({ done: 0, total: toUpload.length })
 
-    try {
-      const imageUrl = await uploadToCloudinary(file)
+    let successCount = 0
 
-      const { error: dbError } = await supabase
-        .from('photos')
-        .insert({ file_url: imageUrl, guest_name: guestName.trim() || null })
+    for (const item of toUpload) {
+      // Mark as uploading
+      setFiles((prev) =>
+        prev.map((f) => f.id === item.id ? { ...f, status: 'uploading' } : f)
+      )
 
-      if (dbError) throw dbError
+      try {
+        const imageUrl = await uploadToCloudinary(item.file)
+        await supabase
+          .from('photos')
+          .insert({ file_url: imageUrl, guest_name: guestName.trim() || null })
 
-      // Record this upload in the rate limit log
-      recordUpload()
+        setFiles((prev) =>
+          prev.map((f) => f.id === item.id ? { ...f, status: 'done' } : f)
+        )
+        successCount++
+      } catch (err) {
+        console.error(err)
+        setFiles((prev) =>
+          prev.map((f) => f.id === item.id ? { ...f, status: 'error' } : f)
+        )
+      }
 
-      setStatus('success')
-      setPreview(null)
-      setFile(null)
-      setGuestName('')
-      if (inputRef.current) inputRef.current.value = ''
-    } catch (err) {
-      console.error(err)
-      setErrorMsg(err.message || 'Something went wrong. Please try again.')
-      setStatus('error')
-    } finally {
-      setUploading(false)
+      setProgress((p) => ({ ...p, done: p.done + 1 }))
     }
+
+    recordUploads(successCount)
+    setUploading(false)
+
+    if (successCount > 0) setStatus('success')
   }
 
   const reset = () => {
-    setPreview(null); setFile(null); setStatus(null); setGuestName('')
+    setFiles([])
+    setGuestName('')
+    setStatus(null)
+    setProgress({ done: 0, total: 0 })
     if (inputRef.current) inputRef.current.value = ''
   }
 
-  const { remaining, resetIn, used } = rateLimitStatus
+  const pendingCount = files.filter((f) => f.status === 'pending').length
 
   return (
     <section id="upload" className="bg-cream py-20 px-6 md:px-16">
@@ -187,8 +202,6 @@ export default function UploadSection() {
             Your Memories
           </h2>
           <div className="w-12 h-px bg-olive-300 mx-auto mt-5" />
-
-          {/* Upload counter — only show after first upload */}
           {used > 0 && remaining > 0 && (
             <p className="font-body text-olive-400 text-xs mt-4">
               {remaining} upload{remaining !== 1 ? 's' : ''} remaining this hour
@@ -198,40 +211,22 @@ export default function UploadSection() {
 
         <AnimatePresence mode="wait">
 
-          {/* ── Rate limited state ── */}
-          {status === 'rate_limited' ? (
-            <motion.div
-              key="rate_limited"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              className="text-center py-16 px-4"
-            >
+          {/* ── Rate limited ── */}
+          {status === 'rate_limited' && files.length === 0 ? (
+            <motion.div key="rate_limited" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="text-center py-16 px-4">
               <div className="text-5xl mb-5">⏳</div>
-              <p className="font-display text-2xl italic text-olive-700 mb-3">
-                Upload limit reached
-              </p>
-              <p className="font-body text-olive-500 text-sm mb-2">
-                You've shared {RATE_LIMIT_MAX} photos — thank you so much!
-              </p>
-              <p className="font-body text-olive-400 text-xs">
-                You can upload more in {resetIn} minute{resetIn !== 1 ? 's' : ''}.
-              </p>
+              <p className="font-display text-2xl italic text-olive-700 mb-3">Upload limit reached</p>
+              <p className="font-body text-olive-500 text-sm mb-2">You've shared {RATE_LIMIT_MAX} photos — thank you so much!</p>
+              <p className="font-body text-olive-400 text-xs">You can upload more in {resetIn} minute{resetIn !== 1 ? 's' : ''}.</p>
             </motion.div>
 
-          ) : status === 'success' ? (
-            /* ── Success state ── */
-            <motion.div
-              key="success"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              className="text-center py-16"
-            >
+          ) : status === 'success' && files.every((f) => f.status === 'done' || f.status === 'error') ? (
+            /* ── Success ── */
+            <motion.div key="success" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="text-center py-16">
               <div className="text-5xl mb-5">🤍</div>
               <p className="font-display text-3xl italic text-olive-700 mb-3">Thank you!</p>
               <p className="font-body text-olive-500 text-sm mb-2">
-                Your memory has been saved. We're so grateful you were there.
+                {files.filter((f) => f.status === 'done').length} photo{files.filter((f) => f.status === 'done').length !== 1 ? 's' : ''} saved. We're so grateful you were there.
               </p>
               {remaining > 0 && (
                 <p className="font-body text-olive-400 text-xs mb-8">
@@ -239,56 +234,129 @@ export default function UploadSection() {
                 </p>
               )}
               {remaining > 0 && (
-                <button
-                  onClick={reset}
-                  className="text-olive-500 text-xs uppercase tracking-widest
-                    border-b border-olive-300 pb-0.5 hover:text-olive-700 transition-colors"
-                >
-                  Upload another
+                <button onClick={reset} className="text-olive-500 text-xs uppercase tracking-widest border-b border-olive-300 pb-0.5 hover:text-olive-700 transition-colors">
+                  Upload more
                 </button>
               )}
             </motion.div>
 
           ) : (
-            /* ── Upload form ── */
+            /* ── Form ── */
             <motion.div key="form" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
-              <div
-                className={`relative border-2 border-dashed rounded-sm mb-6 transition-colors cursor-pointer
-                  ${dragOver ? 'border-olive-500 bg-olive-50' : 'border-olive-300 bg-white/60'}
-                  ${preview ? 'border-solid border-olive-400' : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDrop}
-                onClick={() => !preview && inputRef.current?.click()}
-              >
-                {preview ? (
-                  <div className="relative">
-                    <img src={preview} alt="Preview" className="w-full max-h-80 object-cover rounded-sm" />
-                    <button
-                      onClick={(e) => { e.stopPropagation(); reset() }}
-                      className="absolute top-3 right-3 bg-black/50 text-white w-8 h-8 rounded-full text-sm flex items-center justify-center hover:bg-black/70 transition-colors"
-                    >✕</button>
-                  </div>
-                ) : (
+              {/* Drop zone — hidden once files are selected */}
+              {files.length === 0 && (
+                <div
+                  className={`relative border-2 border-dashed rounded-sm mb-6 transition-colors cursor-pointer
+                    ${dragOver ? 'border-olive-500 bg-olive-50' : 'border-olive-300 bg-white/60'}`}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={onDrop}
+                  onClick={() => inputRef.current?.click()}
+                >
                   <div className="flex flex-col items-center justify-center py-14 select-none">
                     <div className="w-14 h-14 rounded-2xl border-2 border-dashed border-olive-300 flex items-center justify-center mb-4 text-olive-400 text-2xl">+</div>
                     <p className="font-body text-olive-500 text-sm text-center">
-                      Tap to choose a photo<br />
+                      Tap to choose photos<br />
                       <span className="text-olive-400 text-xs">or drag &amp; drop here</span>
                     </p>
-                    <p className="text-olive-300 text-xs mt-3">JPG, PNG, HEIC — up to {MAX_SIZE_MB} MB</p>
+                    <p className="text-olive-400 text-xs mt-2 font-medium">You can select multiple photos at once</p>
+                    <p className="text-olive-300 text-xs mt-1">JPG, PNG, HEIC — up to {MAX_SIZE_MB} MB each</p>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
-            <input
-  ref={inputRef}
-  type="file"
-  accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-  className="hidden"
-  onChange={onInputChange}
-/>
+              {/* Photo preview grid */}
+              {files.length > 0 && (
+                <div className="mb-6">
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <AnimatePresence>
+                      {files.map((item) => (
+                        <motion.div
+                          key={item.id}
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.8 }}
+                          className="relative aspect-square rounded-sm overflow-hidden bg-olive-100"
+                        >
+                          <img src={item.preview} alt="" className="w-full h-full object-cover" />
+
+                          {/* Status overlay */}
+                          {item.status === 'uploading' && (
+                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                              <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            </div>
+                          )}
+                          {item.status === 'done' && (
+                            <div className="absolute inset-0 bg-green-500/40 flex items-center justify-center">
+                              <span className="text-white text-xl">✓</span>
+                            </div>
+                          )}
+                          {item.status === 'error' && (
+                            <div className="absolute inset-0 bg-red-500/40 flex items-center justify-center">
+                              <span className="text-white text-xl">✕</span>
+                            </div>
+                          )}
+
+                          {/* Remove button — only on pending */}
+                          {item.status === 'pending' && (
+                            <button
+                              onClick={() => removeFile(item.id)}
+                              className="absolute top-1 right-1 w-6 h-6 bg-black/60 text-white rounded-full text-xs flex items-center justify-center touch-manipulation"
+                            >✕</button>
+                          )}
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+
+                    {/* Add more button */}
+                    {!uploading && files.some((f) => f.status === 'pending') && remaining > files.filter(f => f.status === 'pending').length && (
+                      <motion.button
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                        onClick={() => inputRef.current?.click()}
+                        className="aspect-square rounded-sm border-2 border-dashed border-olive-300
+                          flex flex-col items-center justify-center text-olive-400 text-xs
+                          hover:border-olive-500 hover:text-olive-600 transition-colors touch-manipulation"
+                      >
+                        <span className="text-2xl mb-1">+</span>
+                        <span>Add more</span>
+                      </motion.button>
+                    )}
+                  </div>
+
+                  {/* Progress bar while uploading */}
+                  {uploading && (
+                    <div className="mb-4">
+                      <div className="flex justify-between text-xs font-body text-olive-400 mb-1">
+                        <span>Uploading…</span>
+                        <span>{progress.done} / {progress.total}</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-olive-100 rounded-full overflow-hidden">
+                        <motion.div
+                          className="h-full bg-olive-600 rounded-full"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }}
+                          transition={{ duration: 0.3 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-olive-400 text-xs font-body text-center">
+                    {files.filter(f => f.status === 'pending').length} photo{files.filter(f => f.status === 'pending').length !== 1 ? 's' : ''} ready to upload
+                  </p>
+                </div>
+              )}
+
+              <input
+                ref={inputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                multiple
+                className="hidden"
+                onChange={onInputChange}
+              />
+
               <input
                 type="text"
                 placeholder="Your name (optional)"
@@ -300,24 +368,24 @@ export default function UploadSection() {
                   focus:outline-none focus:border-olive-500 transition-colors rounded-sm"
               />
 
-              {status === 'error' && (
-                <p className="text-red-500 text-xs mb-4 font-body">{errorMsg}</p>
-              )}
-
               <button
                 onClick={handleUpload}
-                disabled={!file || uploading}
+                disabled={pendingCount === 0 || uploading}
                 className={`w-full py-4 font-body tracking-[0.2em] uppercase text-sm
                   transition-all duration-300 active:scale-[0.98]
-                  ${file && !uploading
+                  ${pendingCount > 0 && !uploading
                     ? 'bg-olive-700 text-cream hover:bg-olive-800'
                     : 'bg-olive-200 text-olive-400 cursor-not-allowed'
                   }`}
               >
-                {uploading ? 'Uploading…' : 'Share Memory'}
+                {uploading
+                  ? `Uploading ${progress.done + 1} of ${progress.total}…`
+                  : pendingCount > 0
+                    ? `Share ${pendingCount} Photo${pendingCount !== 1 ? 's' : ''}`
+                    : 'Share Memory'
+                }
               </button>
 
-              {/* Subtle limit reminder */}
               <p className="text-center text-olive-300 text-xs mt-4 font-body">
                 Max {RATE_LIMIT_MAX} photos per hour
               </p>
