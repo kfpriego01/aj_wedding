@@ -7,8 +7,8 @@ const CLOUD_NAME     = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
 const UPLOAD_PRESET  = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
 
 // ── Rate limit config ────────────────────────────────────────────
-const RATE_LIMIT_MAX    = 10
-const RATE_LIMIT_WINDOW = 60 * 60 * 1000
+const RATE_LIMIT_MAX    = 20
+const RATE_LIMIT_WINDOW = 5 * 60 * 1000 // 30 minutes in ms
 const RATE_LIMIT_KEY    = 'aj_upload_log'
 
 function getRateLimitStatus() {
