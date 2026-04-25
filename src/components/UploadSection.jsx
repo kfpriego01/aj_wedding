@@ -386,9 +386,9 @@ export default function UploadSection() {
                 }
               </button>
 
-              <p className="text-center text-olive-300 text-xs mt-4 font-body">
-                Max {RATE_LIMIT_MAX} photos per hour
-              </p>
+             <p className="text-center text-olive-300 text-xs mt-4 font-body">
+  Max {RATE_LIMIT_MAX} photos per {RATE_LIMIT_WINDOW / 60000} minutes
+</p>
 
             </motion.div>
           )}
